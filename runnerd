@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
@@ -25,7 +26,6 @@ import os
 import sys
 import time
 
-
 logging.basicConfig(
     filename="runnerd.log",
     level=logging.ERROR,
@@ -39,6 +39,7 @@ scriptdir = os.path.dirname(__file__)
 class EventHandler(FileSystemEventHandler):
     def __init__(self, callback):
         self.callback = callback
+
     def on_modified(self, event):
         self.callback()
 
@@ -95,7 +96,7 @@ class Dut:
         def run_in_thread(self, test_event, on_complete):
             self.config['meta'] = {
                 **test_event,
-                'test-case' : {**test_event['test-case']}
+                'test-case': {**test_event['test-case']}
             }
             tmp_conf_file = NamedTemporaryFile(prefix="dut_config_", suffix=".yml")
             ConfigFile(tmp_conf_file.name).save(self.config)
@@ -104,9 +105,9 @@ class Dut:
             test_case = test_event['test-case']
             log.info(f"Start {test_case} @ {self.ip}")
             runner = PytestRunner(
-                test_dir = test_case['dir'],
-                log_dir = self.log_path,
-                stdout_path = self.stdout_path
+                test_dir=test_case['dir'],
+                log_dir=self.log_path,
+                stdout_path=self.stdout_path
             )
             runner.run(tmp_conf_file.name, test_case)
             log.info(f"Complete {test_case} @ {self.ip}")
@@ -188,7 +189,7 @@ class TestManager:
     def __load_progress(self):
         self.test_events_complete.clear()
         with self.progress_file.edit() as progress:
-            if not 'test-events' in progress:
+            if 'test-events' not in progress:
                 return
             progress['test-events'] = list(filter(
                 lambda entry: entry['status'] == "complete",
@@ -283,6 +284,7 @@ class MasterRunner:
             test_event['end-timestamp'] = time.time()
             self.test_manager.mark_complete(test_event)
             self.results_collector.collect()
+
         while True:
             self.duts_manager.collect_duts()
             log.debug("Looking for free DUT... ")
@@ -301,6 +303,7 @@ class ScopeParser:
     scope_config_path = "configs/scope_config.yml"
 
     def __init__(self):
+        self.observer = None
         self.scope_config_file = ConfigFile(self.scope_config_path)
         self.scope_file = StatusFile("meta/scope.json")
 
@@ -346,6 +349,7 @@ class ScopeParser:
     def stop(self):
         self.observer.join()
 
+
 def daemonize(enabled):
     if enabled:
         print("Starting daemon")
@@ -354,6 +358,7 @@ def daemonize(enabled):
     else:
         print("Starting in non-daemon mode")
         return contextlib.suppress()
+
 
 if __name__ == '__main__':
     setproctitle('runnerd')

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
+from common import JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from datetime import datetime
 from functools import reduce
@@ -12,7 +13,6 @@ from tabulate import tabulate
 from tempfile import NamedTemporaryFile
 import argparse
 import daemon
-import hashlib
 import json
 import os
 import shutil
@@ -27,19 +27,19 @@ def error(*args, **kwargs):
 class Printer:
     @staticmethod
     def red(string):
-        return "\033[0;31m"+string+"\033[0m"
+        return "\033[0;31m" + string + "\033[0m"
 
     @staticmethod
     def green(string):
-        return "\033[0;32m"+string+"\033[0m"
+        return "\033[0;32m" + string + "\033[0m"
 
     @staticmethod
     def yellow(string):
-        return "\033[0;33m"+string+"\033[0m"
+        return "\033[0;33m" + string + "\033[0m"
 
     @staticmethod
     def blue(string):
-        return "\033[0;34m"+string+"\033[0m"
+        return "\033[0;34m" + string + "\033[0m"
 
 
 class DataPrinter:
@@ -47,7 +47,7 @@ class DataPrinter:
         if output_format not in ['table', 'json']:
             raise ValueError(f"Invalid output format '{output_format}'")
         self.output_format = output_format
-        self.caption = None
+        self.captions = None
         self.data = None
 
     def setCaptions(self, captions):
@@ -188,7 +188,7 @@ class ScopeHandler:
         )
 
     def run(self, req):
-        tests = reduce(lambda acc, sha: acc+self.__tests_by_sha(sha), req, [])
+        tests = reduce(lambda acc, sha: acc + self.__tests_by_sha(sha), req, [])
         test_events = []
         with self.journal_file.record() as journal:
             for test_case in tests:
@@ -238,7 +238,6 @@ class ScopeHandler:
         for res in results:
             results_dict[res['sha']] = res
 
-        scope_status = []
         for test_case in tests:
             queued_events = filter(
                 lambda e: e['test-case'] == test_case,
@@ -303,7 +302,6 @@ class ScopeHandler:
         )
 
 
-
 class TestSelector:
     def __init__(self, tests):
         self.tests = tests
@@ -324,6 +322,7 @@ class TestSelector:
 
             tmpf.seek(0)
             return [line.split()[0] for line in tmpf.readlines()]
+
 
 usage = """%(prog)s command [args]
 
@@ -355,13 +354,15 @@ class SuperRunnerCli:
         self.scope_handler = ScopeHandler()
         getattr(self, command)(f"{parser.prog} {args.command}", argv[1:])
 
-    def __color_result(self, string):
+    @staticmethod
+    def __color_result(string):
         return {
             'PASSED': Printer.green,
             'FAILED': Printer.red,
         }.get(string, Printer.yellow)(string)
 
-    def __print_test_events(self, args, test_events):
+    @staticmethod
+    def __print_test_events(args, test_events):
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -383,16 +384,17 @@ class SuperRunnerCli:
             })
         p.print()
 
-    def init(self, prog, argv):
+    @staticmethod
+    def init(prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
             description="Initialize new test scope"
         )
-        args = parser.parse_args(argv)
+        _ = parser.parse_args(argv)
 
         runner_path = os.getenv('RUNNER_PATH')
         if not runner_path:
-            error("Enrvironment variable 'RUNNER_PATH' is not set!")
+            error("Environment variable 'RUNNER_PATH' is not set!")
             exit(1)
         if os.path.isdir("meta"):
             error("Existing runner scope found in this directory!")
@@ -426,7 +428,7 @@ class SuperRunnerCli:
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test()
-        })
+            })
         p.print()
 
     def run(self, prog, argv):
@@ -487,7 +489,7 @@ class SuperRunnerCli:
         args = parser.parse_args(argv)
 
         test_event = self.scope_handler.test_event_by_sha({'sha': args.id})
-        deleted_event = self.scope_handler.delete({'test-event': test_event})
+        self.scope_handler.delete({'test-event': test_event})
 
     def queue(self, prog, argv):
         parser = argparse.ArgumentParser(
@@ -556,8 +558,8 @@ class SuperRunnerCli:
                 last_event_result = self.__color_result(last_event['result'])
                 last_event_id = last_event['sha'][:16]
                 last_event_sha = last_event['sha']
-                last_event_date = datetime.fromtimestamp(last_event['end-timestamp']) \
-                                          .strftime("%Y-%m-%d %H:%M:%S")
+                last_event_date = (datetime.fromtimestamp(last_event['end-timestamp'])
+                                   .strftime("%Y-%m-%d %H:%M:%S"))
             except:
                 last_event_result = last_event_id = last_event_sha = last_event_date = ""
             p.addEntry({
@@ -571,7 +573,7 @@ class SuperRunnerCli:
                 'last-result-id': last_event_id,
                 'last-result-sha': last_event_sha,
                 'last-result-date': last_event_date
-        })
+            })
         p.print()
 
     def results(self, prog, argv):
@@ -620,7 +622,7 @@ class SuperRunnerCli:
                 'test': test_case.test(),
                 'result': self.__color_result(test_event['result']),
                 'duration': test_event.duration()
-        })
+            })
         p.print()
 
     def show(self, prog, argv):
@@ -701,7 +703,8 @@ class SuperRunnerCli:
             with daemon.DaemonContext():
                 webbrowser.open_new_tab(os.path.join(test_case['logs'], "main.html"))
 
-    def stdout(self, prog, argv):
+    @staticmethod
+    def stdout(prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
             description="Show pytest standard output on selected DUT"
