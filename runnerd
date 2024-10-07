@@ -121,38 +121,51 @@ class DutsManager:
     base_dut_config_path = "configs/base_dut_config.yml"
 
     def __init__(self, duts_config_file):
+        self.duts_config = None
         self.duts_config_file = duts_config_file
         self.base_dut_config = ConfigFile(self.base_dut_config_path).load()
         self.duts_queue = Queue()
-        self.duts = []
+        self.duts = {}
 
     def collect_duts(self):
         if not self.duts_config_file.need_reload():
             return
 
         self.duts_config = self.duts_config_file.load()
-        self.duts = []
+        ip_list = [dut["ip"] for dut in self.duts_config['duts']]
+        for ip in self.duts.copy():
+            # remove duts deleted from duts_config_file
+            if ip not in ip_list:
+                del self.duts[ip]
         for config in self.duts_config['duts']:
-            dut = Dut({**self.base_dut_config, **config})
-            self.duts.append(dut)
-            self.duts_queue.put(dut)
+            ip = config["ip"]
+            if ip in self.duts:
+                # update config for existing dut
+                self.duts[ip].config = {**self.base_dut_config, **config}
+            else:
+                # add dut
+                dut = Dut({**self.base_dut_config, **config})
+                self.duts[config["ip"]] = dut
+                self.mark_free(dut)
 
     def get_free_dut(self, dut_filter=None):
         filtered_duts = []
-        found = False
+        dut = None
         for _ in self.duts:
-            dut = self.duts_queue.get()
-            if not dut_filter or dut_filter(dut):
-                found = True
+            free_dut = self.duts_queue.get()
+            if not dut_filter or dut_filter(free_dut):
+                dut = free_dut
                 break
-            filtered_duts.append(dut)
-        map(self.duts_queue.put, filtered_duts)
-        if not found:
+            if free_dut.ip in self.duts:
+                filtered_duts.append(free_dut)
+        map(self.mark_free, filtered_duts)
+        if not dut:
             raise Exception("No DUT matching to filter!")
         return dut
 
     def mark_free(self, dut):
-        self.duts_queue.put(dut)
+        if dut.ip in self.duts:
+            self.duts_queue.put(dut)
 
 
 class TestManager:
