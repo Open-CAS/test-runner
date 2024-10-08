@@ -26,10 +26,12 @@ import os
 import sys
 import time
 
+log_format='%(asctime)s %(levelname)-8s %(message)s'
+
 logging.basicConfig(
     filename="runnerd.log",
     level=logging.ERROR,
-    format='%(asctime)s %(levelname)-8s %(message)s',
+    format=log_format,
     datefmt='%Y-%m-%d %H:%M:%S')
 log = logging.getLogger("runnerd")
 
@@ -122,6 +124,7 @@ class DutsManager:
     base_dut_config_path = "configs/base_dut_config.yml"
 
     def __init__(self, duts_config_file):
+        self.lock = Lock()
         self.duts_config = None
         self.duts_config_file = duts_config_file
         self.base_dut_config = ConfigFile(self.base_dut_config_path).load()
@@ -129,21 +132,31 @@ class DutsManager:
         self.duts = {}
 
     def collect_duts(self):
-        if not self.duts_config_file.need_reload():
-            return
+        with self.lock:
+            if not self.duts_config_file.need_reload():
+                return
 
-        self.duts_config = self.duts_config_file.load()
-        ip_list = [dut["ip"] for dut in self.duts_config['duts']]
-        for ip in self.duts.copy():
-            # remove duts deleted from duts_config_file
-            if ip not in ip_list:
-                del self.duts[ip]
-        for config in self.duts_config['duts']:
-            ip = config["ip"]
-            add_dut = ip not in self.duts
-            self.duts[ip] = Dut({**self.base_dut_config, **config})
-            if add_dut:
-                self.mark_free(self.duts[ip])
+            self.duts_config = self.duts_config_file.load()
+            configured_duts = self.duts_config.get('duts', [])
+            if configured_duts is None:
+                log.warning("Incorrect DUTs config!")
+                return
+            ip_list = [dut["ip"] for dut in self.duts_config["duts"]]
+            for ip in self.duts.copy():
+                # remove duts deleted from duts_config_file
+                if ip not in ip_list:
+                    log.debug(f"Removing DUT {ip} from scope")
+                    del self.duts[ip]
+            if ip_list:
+                for config in self.duts_config['duts']:
+                    ip = config["ip"]
+                    add_dut = ip not in self.duts
+                    self.duts[ip] = Dut({**self.base_dut_config, **config})
+                    if add_dut:
+                        log.debug(f"Adding DUT {ip} to scope")
+                        self.mark_free(self.duts[ip])
+            else:
+                log.warning("DUT list is empty!")
 
     def get_free_dut(self):
         dut = None
@@ -274,6 +287,7 @@ class MasterRunner:
 
     def run(self):
         def test_run_complete(dut, test_event):
+            self.duts_manager.collect_duts()
             self.duts_manager.mark_free(dut)
             test_event['end-timestamp'] = time.time()
             self.test_manager.mark_complete(test_event)
@@ -281,11 +295,13 @@ class MasterRunner:
 
         while True:
             self.duts_manager.collect_duts()
+            if not self.duts_manager.duts:
+                continue
             log.debug("Looking for free DUT... ")
             try:
                 dut = self.duts_manager.get_free_dut()
             except LookupError:
-                log.debug("No available DUTs found!")
+                log.warning("No available DUTs found!")
                 continue
             log.debug(f"Found DUT {dut.ip}")
             log.debug("Looking for next test... ")
@@ -367,6 +383,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     log.setLevel((logging.INFO, logging.DEBUG)[args.debug])
+    if args.no_daemon:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(log_format))
+        log.addHandler(handler)
 
     if not os.path.isdir("meta"):
         print("Scope is not initialized in this directory!")
