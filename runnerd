@@ -133,9 +133,15 @@ class DutsManager:
 
     def collect_duts(self):
         with self.lock:
-            if not self.duts_config_file.need_reload():
-                return
-
+            while True:
+                try:
+                    if not self.duts_config_file.need_reload():
+                        return
+                    else:
+                        break
+                except FileNotFoundError:
+                    pass
+            log.info("Reloading DUTs config...")
             self.duts_config = self.duts_config_file.load()
             configured_duts = self.duts_config.get('duts', [])
             if configured_duts is None:
@@ -160,7 +166,7 @@ class DutsManager:
 
     def get_free_dut(self):
         dut = None
-        for _ in self.duts:
+        while self.duts_queue.qsize():
             free_dut = self.duts_queue.get()
             if free_dut.ip in self.duts:
                 dut = free_dut
@@ -287,6 +293,8 @@ class MasterRunner:
 
     def run(self):
         def test_run_complete(dut, test_event):
+            # Sometimes mark_free is quicker than reaching collect_duts in the loop below what
+            # results in queuing next test on removed DUT. collect_duts here prevents that.
             self.duts_manager.collect_duts()
             self.duts_manager.mark_free(dut)
             test_event['end-timestamp'] = time.time()
@@ -295,16 +303,16 @@ class MasterRunner:
 
         while True:
             self.duts_manager.collect_duts()
-            if not self.duts_manager.duts:
+            if not self.duts_manager.duts_queue.qsize():
                 continue
-            log.debug("Looking for free DUT... ")
+            log.debug("Looking for a free DUT... ")
             try:
                 dut = self.duts_manager.get_free_dut()
             except LookupError:
                 log.warning("No available DUTs found!")
                 continue
             log.debug(f"Found DUT {dut.ip}")
-            log.debug("Looking for next test... ")
+            log.debug("Looking for the next test... ")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
             test_event['ip'] = dut.ip

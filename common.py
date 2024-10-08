@@ -28,7 +28,12 @@ class ConfigFile:
         self.last_modify = os.path.getmtime(self.path)
 
     def need_reload(self):
-        return self.last_modify != os.path.getmtime(self.path)
+        try:
+            return self.last_modify != os.path.getmtime(self.path)
+        except FileNotFoundError:
+            # can occur on config file overwrite
+            self.last_modify = 0
+            raise
 
     def load(self):
         with meta_lock:
