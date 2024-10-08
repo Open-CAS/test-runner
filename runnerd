@@ -140,33 +140,27 @@ class DutsManager:
                 del self.duts[ip]
         for config in self.duts_config['duts']:
             ip = config["ip"]
-            if ip in self.duts:
-                # update config for existing dut
-                self.duts[ip].config = {**self.base_dut_config, **config}
-            else:
-                # add dut
-                dut = Dut({**self.base_dut_config, **config})
-                self.duts[config["ip"]] = dut
-                self.mark_free(dut)
+            add_dut = ip not in self.duts
+            self.duts[ip] = Dut({**self.base_dut_config, **config})
+            if add_dut:
+                self.mark_free(self.duts[ip])
 
-    def get_free_dut(self, dut_filter=None):
-        filtered_duts = []
+    def get_free_dut(self):
         dut = None
         for _ in self.duts:
             free_dut = self.duts_queue.get()
-            if not dut_filter or dut_filter(free_dut):
+            if free_dut.ip in self.duts:
                 dut = free_dut
                 break
-            if free_dut.ip in self.duts:
-                filtered_duts.append(free_dut)
-        map(self.mark_free, filtered_duts)
         if not dut:
-            raise Exception("No DUT matching to filter!")
+            raise LookupError()
         return dut
 
     def mark_free(self, dut):
+        # DUTs can be removed from list or updated during test execution
+        # do not re-queue removed DUT or queue DUT by IP to get current DUT entry
         if dut.ip in self.duts:
-            self.duts_queue.put(dut)
+            self.duts_queue.put(self.duts[dut.ip])
 
 
 class TestManager:
@@ -288,7 +282,11 @@ class MasterRunner:
         while True:
             self.duts_manager.collect_duts()
             log.debug("Looking for free DUT... ")
-            dut = self.duts_manager.get_free_dut()
+            try:
+                dut = self.duts_manager.get_free_dut()
+            except LookupError:
+                log.debug("No available DUTs found!")
+                continue
             log.debug(f"Found DUT {dut.ip}")
             log.debug("Looking for next test... ")
             test_event = self.test_manager.get_next_test()
@@ -365,7 +363,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--no-daemon', action='store_true')
-    parser.add_argument('--version', action='version', version='Superrunner4000 v0.2')
+    parser.add_argument('--version', action='version', version='Superrunner4000 v0.3')
     args = parser.parse_args()
 
     log.setLevel((logging.INFO, logging.DEBUG)[args.debug])
