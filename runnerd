@@ -334,12 +334,18 @@ class MasterRunner:
             self.test_manager.mark_complete(test_event)
             self.results_collector.collect()
 
+        def collect_duts():
+            while True:
+                self.duts_manager.collect_duts()
+
+        collector_thread = Thread(target=collect_duts)
+        collector_thread.start()
+
         while True:
             log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
             while True:
-                self.duts_manager.collect_duts()
                 if not self.duts_manager.duts_queue.qsize():
                     continue
                 log.debug("Looking for a free DUT...")
