@@ -37,9 +37,13 @@ class ConfigFile:
 
     def load(self):
         with meta_lock:
-            self.__access()
             with open(self.path, 'r') as conf:
-                return yaml.safe_load(conf)
+                # config can be None if file is being overwritten at read time
+                # don't update last modify time - let the file be re-read
+                config = yaml.safe_load(conf)
+                if config:
+                    self.__access()
+                return config
 
     def save(self, data):
         with meta_lock:

@@ -8,7 +8,7 @@
 from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from pathlib import Path
-from queue import Queue
+from queue import Queue, Empty
 from setproctitle import setproctitle
 from subprocess import Popen, PIPE
 from tempfile import NamedTemporaryFile
@@ -124,12 +124,13 @@ class DutsManager:
     base_dut_config_path = "configs/base_dut_config.yml"
 
     def __init__(self, duts_config_file):
-        self.dut_dict_lock = Lock()
+        self.duts_lock = Lock()
         self.duts_config = None
         self.duts_config_file = duts_config_file
         self.base_dut_config = ConfigFile(self.base_dut_config_path).load()
-        self.duts_queue = Queue()
+        self.duts_queue = DutQueue()
         self.duts = {}
+        self.duts_in_use = set()
 
     def collect_duts(self):
         start_time = time.time()
@@ -145,41 +146,76 @@ class DutsManager:
                     start_time = time.time()
                 pass
 
-        with self.dut_dict_lock:
-            log.info("Reloading DUTs config...")
+        with self.duts_lock:
+            log.debug("Reloading DUTs config...")
             self.duts_config = self.duts_config_file.load()
+            if self.duts_config is None:
+                log.error("Error while loading DUTs config!")
+                return
             configured_duts = self.duts_config.get('duts', [])
             if configured_duts is None:
-                log.warning("Incorrect DUTs config!")
+                log.warning("Check DUTs config!")
                 return
             ip_list = [dut["ip"] for dut in self.duts_config["duts"]]
             for ip in self.duts.copy():
                 # remove duts deleted from duts_config_file
                 if ip not in ip_list:
-                    log.debug(f"Removing DUT {ip} from scope")
+                    log.info(f"Removing DUT {ip} from scope (currently running test "
+                             "will NOT be terminated)")
                     del self.duts[ip]
             if ip_list:
                 for config in self.duts_config['duts']:
                     ip = config["ip"]
                     add_dut = ip not in self.duts
+                    # add new or update config
                     self.duts[ip] = Dut({**self.base_dut_config, **config})
                     if add_dut:
-                        log.debug(f"Adding DUT {ip} to scope")
-                        self.mark_free(self.duts[ip])
+                        log.info(f"Adding DUT {ip} to scope")
+                        if ip not in self.duts_in_use:
+                            self.duts_queue.put(self.duts[ip])
+                        else:
+                            log.debug(f"DUT {ip} is already in use - skip adding to queue")
             else:
                 log.warning("DUT list is empty!")
+                return
+            log.debug("DUTs config reloaded")
 
     def get_free_dut(self):
-        free_dut = self.duts_queue.get()
-        if free_dut.ip in self.duts:
-            return free_dut
+        with self.duts_lock:
+            while True:
+                # raise Empty if queue is empty
+                dut = self.duts_queue.get(block=False)
+                if dut.ip in self.duts:
+                    self.duts_in_use.add(dut.ip)
+                    return dut
 
     def mark_free(self, dut):
-        with self.dut_dict_lock:
-            # DUTs can be removed from list or updated during test execution
-            # do not re-queue removed DUT or queue DUT by IP to get current DUT entry
+        with self.duts_lock:
+            self.duts_in_use.remove(dut.ip)
+            # re-queue only currently configured DUTs
             if dut.ip in self.duts:
+                # use current DUT entry (might be updated in the meantime)
                 self.duts_queue.put(self.duts[dut.ip])
+
+
+class DutQueue(Queue):
+    """Queue with unique DUT entries"""
+    def __init__(self):
+        super().__init__()
+        self.dut_set = set()
+        self.set_lock = Lock()
+
+    def put(self, dut: Dut, block=True, timeout=None):
+        with self.set_lock:
+            if dut.ip not in self.dut_set:
+                self.dut_set.add(dut.ip)
+                super().put(dut, block, timeout)
+
+    def get(self, block=True, timeout=None) -> Dut:
+        with self.set_lock:
+            dut = super().get(block, timeout)
+            self.dut_set.remove(dut.ip)
+            return dut
 
 
 class TestManager:
@@ -302,14 +338,14 @@ class MasterRunner:
             self.duts_manager.collect_duts()
             if not self.duts_manager.duts_queue.qsize():
                 continue
-            log.debug("Looking for a free DUT... ")
+            log.debug("Looking for a free DUT...")
             try:
                 dut = self.duts_manager.get_free_dut()
-            except LookupError:
-                log.warning("No available DUTs found!")
+            except Empty:
+                log.debug("No free DUTs at the moment! Waiting...")
                 continue
             log.debug(f"Found DUT {dut.ip}")
-            log.debug("Looking for the next test... ")
+            log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
             test_event['ip'] = dut.ip
@@ -327,7 +363,7 @@ class ScopeParser:
         self.scope_file = StatusFile("meta/scope.json")
 
     def __parse_config(self):
-        log.debug("Reloading scope config")
+        log.debug("Reloading scope config...")
         scope_config = self.scope_config_file.load()
         scope = self.scope_file.load()
         pytest_runner = PytestRunner(test_dir=scope_config['tests_path'])
@@ -352,6 +388,7 @@ class ScopeParser:
                     pytest_options
                 ))
         test_cases = list(dict.fromkeys(test_cases))
+        log.debug("Scope config reloaded")
 
         with self.scope_file.edit() as scope:
             scope['scope'] = scope_config['scope']
