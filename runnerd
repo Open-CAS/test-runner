@@ -335,23 +335,25 @@ class MasterRunner:
             self.results_collector.collect()
 
         while True:
-            self.duts_manager.collect_duts()
-            if not self.duts_manager.duts_queue.qsize():
-                continue
-            log.debug("Looking for a free DUT...")
-            try:
-                dut = self.duts_manager.get_free_dut()
-            except Empty:
-                log.debug("No free DUTs at the moment! Waiting...")
-                continue
-            log.debug(f"Found DUT {dut.ip}")
             log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
-            test_event['ip'] = dut.ip
-            test_event['start-timestamp'] = time.time()
-            self.test_manager.mark_started(test_event)
-            dut.run_test(test_event, test_run_complete)
+            while True:
+                self.duts_manager.collect_duts()
+                if not self.duts_manager.duts_queue.qsize():
+                    continue
+                log.debug("Looking for a free DUT...")
+                try:
+                    dut = self.duts_manager.get_free_dut()
+                except Empty:
+                    log.debug("No free DUTs at the moment! Waiting...")
+                    continue
+                log.debug(f"Found DUT {dut.ip}")
+                test_event['ip'] = dut.ip
+                test_event['start-timestamp'] = time.time()
+                self.test_manager.mark_started(test_event)
+                dut.run_test(test_event, test_run_complete)
+                break
 
 
 class ScopeParser:
