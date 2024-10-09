@@ -124,7 +124,7 @@ class DutsManager:
     base_dut_config_path = "configs/base_dut_config.yml"
 
     def __init__(self, duts_config_file):
-        self.lock = Lock()
+        self.dut_dict_lock = Lock()
         self.duts_config = None
         self.duts_config_file = duts_config_file
         self.base_dut_config = ConfigFile(self.base_dut_config_path).load()
@@ -132,15 +132,20 @@ class DutsManager:
         self.duts = {}
 
     def collect_duts(self):
-        with self.lock:
-            while True:
-                try:
-                    if not self.duts_config_file.need_reload():
-                        return
-                    else:
-                        break
-                except FileNotFoundError:
-                    pass
+        start_time = time.time()
+        while True:
+            try:
+                if not self.duts_config_file.need_reload():
+                    return
+                else:
+                    break
+            except FileNotFoundError:
+                if time.time() - start_time > 5:
+                    log.warning("DUT configuration file not found!")
+                    start_time = time.time()
+                pass
+
+        with self.dut_dict_lock:
             log.info("Reloading DUTs config...")
             self.duts_config = self.duts_config_file.load()
             configured_duts = self.duts_config.get('duts', [])
@@ -165,21 +170,16 @@ class DutsManager:
                 log.warning("DUT list is empty!")
 
     def get_free_dut(self):
-        dut = None
-        while self.duts_queue.qsize():
-            free_dut = self.duts_queue.get()
-            if free_dut.ip in self.duts:
-                dut = free_dut
-                break
-        if not dut:
-            raise LookupError()
-        return dut
+        free_dut = self.duts_queue.get()
+        if free_dut.ip in self.duts:
+            return free_dut
 
     def mark_free(self, dut):
-        # DUTs can be removed from list or updated during test execution
-        # do not re-queue removed DUT or queue DUT by IP to get current DUT entry
-        if dut.ip in self.duts:
-            self.duts_queue.put(self.duts[dut.ip])
+        with self.dut_dict_lock:
+            # DUTs can be removed from list or updated during test execution
+            # do not re-queue removed DUT or queue DUT by IP to get current DUT entry
+            if dut.ip in self.duts:
+                self.duts_queue.put(self.duts[dut.ip])
 
 
 class TestManager:
@@ -293,9 +293,6 @@ class MasterRunner:
 
     def run(self):
         def test_run_complete(dut, test_event):
-            # Sometimes mark_free is quicker than reaching collect_duts in the loop below what
-            # results in queuing next test on removed DUT. collect_duts here prevents that.
-            self.duts_manager.collect_duts()
             self.duts_manager.mark_free(dut)
             test_event['end-timestamp'] = time.time()
             self.test_manager.mark_complete(test_event)
