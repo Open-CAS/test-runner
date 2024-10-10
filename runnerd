@@ -8,7 +8,7 @@
 from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from pathlib import Path
-from queue import Queue, Empty
+from queue import Queue
 from setproctitle import setproctitle
 from subprocess import Popen, PIPE
 from tempfile import NamedTemporaryFile
@@ -26,7 +26,7 @@ import os
 import sys
 import time
 
-log_format='%(asctime)s %(levelname)-8s %(message)s'
+log_format = '%(asctime)s %(levelname)-8s %(message)s'
 
 logging.basicConfig(
     filename="runnerd.log",
@@ -154,7 +154,7 @@ class DutsManager:
                 return
             configured_duts = self.duts_config.get('duts', [])
             if configured_duts is None:
-                log.warning("Check DUTs config!")
+                log.error("Cannot read DUTs - check DUTs config file!")
                 return
             ip_list = [dut["ip"] for dut in self.duts_config["duts"]]
             for ip in self.duts.copy():
@@ -181,10 +181,9 @@ class DutsManager:
             log.debug("DUTs config reloaded")
 
     def get_free_dut(self):
-        with self.duts_lock:
-            while True:
-                # raise Empty if queue is empty
-                dut = self.duts_queue.get(block=False)
+        while True:
+            dut = self.duts_queue.get()
+            with self.duts_lock:
                 if dut.ip in self.duts:
                     self.duts_in_use.add(dut.ip)
                     return dut
@@ -212,8 +211,8 @@ class DutQueue(Queue):
                 super().put(dut, block, timeout)
 
     def get(self, block=True, timeout=None) -> Dut:
+        dut = super().get(block, timeout)
         with self.set_lock:
-            dut = super().get(block, timeout)
             self.dut_set.remove(dut.ip)
             return dut
 
@@ -345,21 +344,13 @@ class MasterRunner:
             log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
-            while True:
-                if not self.duts_manager.duts_queue.qsize():
-                    continue
-                log.debug("Looking for a free DUT...")
-                try:
-                    dut = self.duts_manager.get_free_dut()
-                except Empty:
-                    log.debug("No free DUTs at the moment! Waiting...")
-                    continue
-                log.debug(f"Found DUT {dut.ip}")
-                test_event['ip'] = dut.ip
-                test_event['start-timestamp'] = time.time()
-                self.test_manager.mark_started(test_event)
-                dut.run_test(test_event, test_run_complete)
-                break
+            log.debug("Looking for a free DUT...")
+            dut = self.duts_manager.get_free_dut()
+            log.debug(f"Found DUT {dut.ip}")
+            test_event['ip'] = dut.ip
+            test_event['start-timestamp'] = time.time()
+            self.test_manager.mark_started(test_event)
+            dut.run_test(test_event, test_run_complete)
 
 
 class ScopeParser:
