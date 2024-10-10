@@ -9,7 +9,7 @@
 from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from pathlib import Path
-from queue import Queue, Empty
+from queue import Queue
 from setproctitle import setproctitle
 from subprocess import Popen, PIPE
 from tempfile import NamedTemporaryFile
@@ -27,7 +27,7 @@ import os
 import sys
 import time
 
-log_format='%(asctime)s %(levelname)-8s %(message)s'
+log_format = '%(asctime)s %(levelname)-8s %(message)s'
 
 logging.basicConfig(
     filename="runnerd.log",
@@ -179,10 +179,9 @@ class DutsManager:
             log.debug("DUTs config reloaded")
 
     def get_free_dut(self):
-        with self.duts_lock:
-            while True:
-                # raise Empty if queue is empty
-                dut = self.duts_queue.get(block=False)
+        while True:
+            dut = self.duts_queue.get()
+            with self.duts_lock:
                 if dut.host in self.duts:
                     self.duts_in_use.add(dut.host)
                     return dut
@@ -210,10 +209,10 @@ class DutQueue(Queue):
                 super().put(dut, block, timeout)
 
     def get(self, block=True, timeout=None) -> Dut:
+        dut = super().get(block, timeout)
         with self.set_lock:
-            dut = super().get(block, timeout)
             self.dut_set.remove(dut.host)
-            return dut
+        return dut
 
 
 class TestManager:
@@ -344,21 +343,13 @@ class MasterRunner:
             log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
-            while True:
-                if not self.duts_manager.duts_queue.qsize():
-                    continue
-                log.debug("Looking for a free DUT...")
-                try:
-                    dut = self.duts_manager.get_free_dut()
-                except Empty:
-                    log.debug("No free DUTs at the moment! Waiting...")
-                    continue
-                log.debug(f"Found DUT {dut.host}")
-                test_event['host'] = dut.host
-                test_event['start-timestamp'] = time.time()
-                self.test_manager.mark_started(test_event)
-                dut.run_test(test_event, test_run_complete)
-                break
+            log.debug("Looking for a free DUT...")
+            dut = self.duts_manager.get_free_dut()
+            log.debug(f"Found DUT {dut.host}")
+            test_event['host'] = dut.host
+            test_event['start-timestamp'] = time.time()
+            self.test_manager.mark_started(test_event)
+            dut.run_test(test_event, test_run_complete)
 
 
 class ScopeParser:
