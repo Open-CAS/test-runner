@@ -4,11 +4,13 @@
 # Copyright(c) 2024 Huawei Technologies
 # SPDX-License-Identifier: BSD-3-Clause
 #
+import signal
+import threading
 
 from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from pathlib import Path
-from queue import Queue
+from queue import Queue, Empty
 from setproctitle import setproctitle
 from subprocess import Popen, PIPE
 from tempfile import NamedTemporaryFile
@@ -36,6 +38,9 @@ logging.basicConfig(
 log = logging.getLogger("runnerd")
 
 scriptdir = os.path.dirname(__file__)
+
+child_pids = []
+pid_lock = Lock()
 
 
 class EventHandler(FileSystemEventHandler):
@@ -67,8 +72,12 @@ class PytestRunner:
         cmd += f"\"{test_case}\""
 
         out = open(self.stdout_path, "w") if self.stdout_path else PIPE
-        process = Popen(cmd, shell=True, stdout=out, stderr=out)
+        with pid_lock:
+            process = Popen(cmd, shell=True, stdout=out, stderr=out)
+            child_pids.append(process.pid)
         process.wait()
+        with pid_lock:
+            child_pids.remove(process.pid)
         if self.stdout_path:
             out.close()
 
@@ -180,9 +189,12 @@ class DutsManager:
                 return
             log.debug("DUTs config reloaded")
 
-    def get_free_dut(self):
-        while True:
-            dut = self.duts_queue.get()
+    def get_free_dut(self, working: Event):
+        while working.is_set():
+            try:
+                dut = self.duts_queue.get(block=False)
+            except Empty:
+                continue
             with self.duts_lock:
                 if dut.ip in self.duts:
                     self.duts_in_use.add(dut.ip)
@@ -325,6 +337,7 @@ class MasterRunner:
         self.test_manager = TestManager()
         self.results_collector = ResultsCollector()
         self.results_collector.collect()
+        self.working = threading.Event()
 
     def run(self):
         def test_run_complete(dut, test_event):
@@ -334,23 +347,31 @@ class MasterRunner:
             self.results_collector.collect()
 
         def collect_duts():
-            while True:
+            while self.working.is_set():
                 self.duts_manager.collect_duts()
 
         collector_thread = Thread(target=collect_duts)
+
+        self.working.set()
+
         collector_thread.start()
 
-        while True:
+        while self.working.is_set():
             log.debug("Looking for the next test...")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
             log.debug("Looking for a free DUT...")
-            dut = self.duts_manager.get_free_dut()
+            dut = self.duts_manager.get_free_dut(self.working)
+            if dut is None:
+                # when execution is interrupted
+                break
             log.debug(f"Found DUT {dut.ip}")
             test_event['ip'] = dut.ip
             test_event['start-timestamp'] = time.time()
             self.test_manager.mark_started(test_event)
             dut.run_test(test_event, test_run_complete)
+
+        collector_thread.join()
 
 
 class ScopeParser:
@@ -409,8 +430,16 @@ def daemonize(enabled):
     if enabled:
         print("Starting daemon")
         logger_files = [handler.stream.fileno() for handler in logging.root.handlers]
-        return daemon.DaemonContext(working_directory=os.getcwd(), files_preserve=logger_files)
+        signal_map = {
+            signal.SIGINT: signal_handler,
+            signal.SIGTERM: signal_handler,
+        }
+        return daemon.DaemonContext(
+            working_directory=os.getcwd(), files_preserve=logger_files, signal_map=signal_map,
+        )
     else:
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
         print("Starting in non-daemon mode")
         return contextlib.suppress()
 
@@ -436,12 +465,21 @@ if __name__ == '__main__':
     try:
         lock = filelock.FileLock("meta/daemon.lock").acquire(timeout=0.01)
     except filelock.Timeout:
-        print("Another instance of 'runnerd' demon is active!")
+        print("Another instance of 'runnerd' daemon is active!")
         exit(1)
 
     print("Preparing scope")
     scope_parser = ScopeParser()
     scope_parser.start()
+
+    runner = MasterRunner()
+
+    def signal_handler(signum, frame):
+        log.debug(f"Signal {signum} - terminate execution")
+        runner.working.clear()
+        with pid_lock:
+            for pid in child_pids:
+                os.kill(pid, signal.SIGTERM)
+
     with daemonize(not args.no_daemon):
-        runner = MasterRunner()
         runner.run()
