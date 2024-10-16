@@ -1,5 +1,6 @@
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2024 Huawei Technologies
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
@@ -10,9 +11,7 @@ from json.decoder import JSONDecodeError
 import hashlib
 import json
 import os
-import random
 import re
-import sys
 import time
 import yaml
 
@@ -29,13 +28,22 @@ class ConfigFile:
         self.last_modify = os.path.getmtime(self.path)
 
     def need_reload(self):
-        return self.last_modify != os.path.getmtime(self.path)
+        try:
+            return self.last_modify != os.path.getmtime(self.path)
+        except FileNotFoundError:
+            # can occur on config file overwrite
+            self.last_modify = 0
+            raise
 
     def load(self):
         with meta_lock:
-            self.__access()
             with open(self.path, 'r') as conf:
-                return yaml.safe_load(conf)
+                # config can be None if file is being overwritten at read time
+                # don't update last modify time - let the file be re-read
+                config = yaml.safe_load(conf)
+                if config:
+                    self.__access()
+                return config
 
     def save(self, data):
         with meta_lock:
@@ -173,7 +181,7 @@ class TestEvent(dict):
             start_time = self['start-timestamp']
             end_time = self.get('end-timestamp', time.time())
             return timedelta(seconds=int(end_time-start_time))
-        except:
+        except KeyError:
             return timedelta(0)
 
     def __eq__(self, other):
@@ -195,6 +203,7 @@ class TestEvent(dict):
             },
             **data
         })
+
 
 class JournalParser:
     def __init__(self, journal_file):
