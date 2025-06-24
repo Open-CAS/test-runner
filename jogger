@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2025 Huawei Technologies Co., Ltd.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser
+from common import JournalFile, StatusFile, TestCase, TestEvent, JournalParser
 
 from datetime import datetime
 from functools import reduce
@@ -12,7 +13,6 @@ from tabulate import tabulate
 from tempfile import NamedTemporaryFile
 import argparse
 import daemon
-import hashlib
 import json
 import os
 import shutil
@@ -328,17 +328,18 @@ class TestSelector:
 usage = """%(prog)s command [args]
 
 Supported commands:
-  init        Initialize new test scope
-  tests       Print list of test cases
-  run         Run specified tests or select them interactively
-  delete      Delete test event from the queue
-  queue       Print test event queue
-  status      Print scope status
-  results     Print list of test results
-  show        Print details of test result
-  log         Open log(s) for given test case in default browser
-  test-log    Open log for given test event in default browser
-  stdout      Show pytest standard output on selected DUT
+  init              Initialize new test scope
+  tests             Print list of test cases
+  run               Run specified tests or select them interactively
+  delete            Delete test event from the queue
+  queue             Print test event queue
+  status            Print scope status
+  results           Print list of test results
+  show              Print details of test result
+  log               Print console log for given test event
+  html-logs         Open log(s) for given test case in default browser
+  html-log          Open log for given test event in default browser
+  stdout            Show pytest standard output on selected DUT
 """
 
 
@@ -661,7 +662,22 @@ class SuperRunnerCli:
     def log(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
-            description="Open log for given test event in default browser"
+            description="Open console log for given test event in default browser"
+        )
+        parser.add_argument('sha')
+        args = parser.parse_args(argv)
+
+        res = self.scope_handler.result_by_sha({'sha': args.sha})
+        if not res:
+            error(f"Result with id '{args.sha}' not found")
+            exit(1)
+
+        os.system(f"less {os.path.join(res['logs'], 'stdout.log')}")
+
+    def html_log(self, prog, argv):
+        parser = argparse.ArgumentParser(
+            prog=prog,
+            description="Open html log for given test event in default browser"
         )
         parser.add_argument('sha')
         args = parser.parse_args(argv)
@@ -675,10 +691,10 @@ class SuperRunnerCli:
             webbrowser.open_new_tab(os.path.join(res['logs'], "main.html"))
         self.scope_handler.log(prog, argv)
 
-    def test_log(self, prog, argv):
+    def html_logs(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
-            description="Open log(s) for given test case in default browser"
+            description="Open html log(s) for given test case in default browser"
         )
         parser.add_argument('id')
         parser.add_argument('--passed', action='store_true')
