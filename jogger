@@ -467,7 +467,7 @@ class SuperRunnerCli:
 
         if args.not_passed:
             test_cases = list(filter(
-                lambda tc: tc.get('last-event', {}).get('result') not in [None, "PASSED"],
+                lambda tc: tc.get('last-event', {}).get('result') not in ["PASSED"],
                 test_cases
             ))
 
