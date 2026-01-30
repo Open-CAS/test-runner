@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2026 Unvertical
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
@@ -521,7 +522,7 @@ class SuperRunnerCli:
                 'function': test_case.function(),
                 'test': test_case.test(),
                 'status': test_event['status'],
-                'dut': test_event.get('ip', ""),
+                'dut': test_event.get('host', ""),
                 'duration': test_event.duration()
             })
         p.print()
@@ -566,7 +567,7 @@ class SuperRunnerCli:
                 'function': test_case.function(),
                 'test': test_case.test(),
                 'status': queued_event.get('status', "none"),
-                'dut': queued_event.get('ip', ""),
+                'dut': queued_event.get('host', ""),
                 'last-result': last_event_result,
                 'last-result-id': last_event_id,
                 'last-result-sha': last_event_sha,
@@ -615,7 +616,7 @@ class SuperRunnerCli:
             p.addEntry({
                 'id': test_event['sha'][:16],
                 'sha': test_event['sha'],
-                'dut': test_event['ip'],
+                'dut': test_event['host'],
                 'function': test_case.function(),
                 'test': test_case.test(),
                 'result': self.__color_result(test_event['result']),
@@ -651,7 +652,7 @@ class SuperRunnerCli:
         p.setData({
             'sha': test_event['sha'],
             'test': f"{test_case}",
-            'dut': test_event['ip'],
+            'dut': test_event['host'],
             'logs': test_event['logs'],
             'result': self.__color_result(test_event['result']),
             'duration': test_event.duration()
@@ -706,16 +707,16 @@ class SuperRunnerCli:
             prog=prog,
             description="Show pytest standard output on selected DUT"
         )
-        parser.add_argument('ip')
+        parser.add_argument('host')
         args = parser.parse_args(argv)
 
-        stdout_path = os.path.join("results", args.ip, "stdout")
+        stdout_path = os.path.join("results", args.host, "stdout")
 
         if not os.path.isfile(stdout_path):
-            error(f"DUT with ip address '{args.ip}' not found")
+            error(f"DUT with ip address '{args.host}' not found")
             exit(1)
 
-        os.system(f"tail -f results/{args.ip}/stdout")
+        os.system(f"tail -f results/{args.host}/stdout")
 
 
 if __name__ == '__main__':

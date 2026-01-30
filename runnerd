@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 #
 # Copyright(c) 2023 Intel Corporation
+# Copyright(c) 2026 Unvertical
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
@@ -83,8 +84,8 @@ class PytestRunner:
 class Dut:
     def __init__(self, config):
         self.config = config
-        self.ip = config['ip']
-        log_path = Path('results').joinpath(self.ip)
+        self.host = config['host']
+        log_path = Path('results').joinpath(self.host)
         log_path.mkdir(parents=True, exist_ok=True)
         self.log_path = log_path.absolute()
         stdout_path = log_path.joinpath("stdout")
@@ -99,17 +100,17 @@ class Dut:
             }
             tmp_conf_file = NamedTemporaryFile(prefix="dut_config_", suffix=".yml")
             ConfigFile(tmp_conf_file.name).save(self.config)
-            log_path = Path('results').joinpath(self.ip)
+            log_path = Path('results').joinpath(self.host)
             log_path.mkdir(parents=True, exist_ok=True)
             test_case = test_event['test-case']
-            log.info(f"Start {test_case} @ {self.ip}")
+            log.info(f"Start {test_case} @ {self.host}")
             runner = PytestRunner(
                 test_dir = test_case['dir'],
                 log_dir = self.log_path,
                 stdout_path = self.stdout_path
             )
             runner.run(tmp_conf_file.name, test_case)
-            log.info(f"Complete {test_case} @ {self.ip}")
+            log.info(f"Complete {test_case} @ {self.host}")
             on_complete(self, test_event)
 
         thread = Thread(target=run_in_thread, args=(self, test_event, on_complete))
@@ -274,11 +275,11 @@ class MasterRunner:
             self.duts_manager.collect_duts()
             log.debug("Looking for free DUT... ")
             dut = self.duts_manager.get_free_dut()
-            log.debug(f"Found DUT {dut.ip}")
+            log.debug(f"Found DUT {dut.host}")
             log.debug("Looking for next test... ")
             test_event = self.test_manager.get_next_test()
             log.debug(f"Found test {test_event}")
-            test_event['ip'] = dut.ip
+            test_event['host'] = dut.host
             test_event['start-timestamp'] = time.time()
             self.test_manager.mark_started(test_event)
             dut.run_test(test_event, test_run_complete)
