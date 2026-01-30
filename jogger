@@ -455,7 +455,7 @@ class SuperRunnerCli:
 
         if not args.include_queued and not run_all:
             test_cases = list(filter(
-                lambda tc: tc.get('queued-event', {}).get('status') == "complete",
+                lambda tc: tc.get('queued-event', {}).get('status') != "queued",
                 test_cases
             ))
 
