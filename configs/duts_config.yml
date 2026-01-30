@@ -1,5 +1,5 @@
 duts:
-  - ip: "192.168.0.15"
+  - host: "host1"
     user: "root"
     password: "PasswordInPlainText!SomeonePleaseCallThePolice!"
     disks:
@@ -19,7 +19,7 @@ duts:
         serial: "123456789"
         type: "hdd"
         blocksize: 512
-  - ip: "192.168.0.42"
+  - host: "192.168.0.42"
     user: "root"
     password: "AnotherPasswordInPlainText!DontTellMyMom!"
     disks:
