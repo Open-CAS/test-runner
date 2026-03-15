@@ -645,7 +645,8 @@ class SuperRunnerCli:
 
         p = DataPrinter(args.format)
         p.setCaptions([
-            ('SHA', 'sha'),
+            ('Event SHA', 'event_sha'),
+            ('Test SHA', 'test_sha'),
             ('Test', 'test'),
             ('DUT', 'dut'),
             ('Logs', 'logs'),
@@ -653,7 +654,8 @@ class SuperRunnerCli:
             ('Duration', 'duration')
         ])
         p.setData({
-            'sha': test_event['sha'],
+            'event_sha': test_event['sha'],
+            'test_sha': test_case['sha'],
             'test': f"{test_case}",
             'dut': test_event['host'],
             'logs': test_event['logs'],
