@@ -670,8 +670,13 @@ class SuperRunnerCli:
             ('DUT', 'dut'),
             ('Logs', 'logs'),
             ('Result', 'result'),
-            ('Duration', 'duration')
+            ('Duration', 'duration'),
+            ('Completed', 'completed')
         ])
+
+        end_ts = test_event.get('end-timestamp')
+        completed = datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M:%S') if end_ts else ""
+
         p.setData({
             'event_sha': test_event['sha'],
             'test_sha': test_case['sha'],
@@ -679,7 +684,8 @@ class SuperRunnerCli:
             'dut': test_event['host'],
             'logs': test_event['logs'],
             'result': self.__color_result(test_event['result']),
-            'duration': test_event.duration()
+            'duration': test_event.duration(),
+            'completed': completed
         })
         p.print()
 
