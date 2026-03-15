@@ -331,6 +331,7 @@ Supported commands:
   init              Initialize new test scope
   tests             Print list of test cases
   run               Run specified tests or select them interactively
+  rerun             Re-queue a test case from given event
   delete            Delete test event from the queue
   queue             Print test event queue
   status            Print scope status
@@ -480,6 +481,24 @@ class SuperRunnerCli:
         to_run = TestSelector(test_cases).select()
 
         test_events = self.scope_handler.run(to_run)
+        self.__print_test_events(args, test_events)
+
+    def rerun(self, prog, argv):
+        parser = argparse.ArgumentParser(
+            prog=prog,
+            description="Re-queue a test case from given event"
+        )
+        parser.add_argument('sha')
+        parser.add_argument('--long', action='store_true')
+        parser.add_argument('--format', choices=['table', 'json'], default='table')
+        args = parser.parse_args(argv)
+
+        res = self.scope_handler.result_by_sha({'sha': args.sha})
+        if not res:
+            error(f"Result with id '{args.sha}' not found")
+            exit(1)
+
+        test_events = self.scope_handler.run([res['test-case']['sha']])
         self.__print_test_events(args, test_events)
 
     def delete(self, prog, argv):
