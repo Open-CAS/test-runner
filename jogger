@@ -567,14 +567,68 @@ class SuperRunnerCli:
             })
         p.print()
 
+    def __status_collapsed(self, args):
+        status = self.scope_handler.status()
+        collapsed = self.scope_handler.tests({'collapsed': True})
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+
+        children_by_sha = {}
+        for tc in collapsed:
+            children_by_sha[tc['sha']] = tc.get('children', [tc])
+
+        status_by_sig = {}
+        for tc in status:
+            status_by_sig[tc.signature()] = tc
+
+        p = ListPrinter(args.format)
+        id_field = ('id', 'sha')[args.long]
+        test_field = ('function', 'test')[args.long]
+        p.setHeader([
+            ('Id', id_field),
+            ('Test', test_field),
+            ('Passed', 'passed'),
+            ('Failed', 'failed'),
+            ('Issue', 'issue'),
+            ('Not run', 'not_run'),
+        ])
+        for tc in collapsed:
+            children = children_by_sha.get(tc['sha'], [tc])
+            passed = failed = issue = not_run = 0
+            for child in children:
+                child_status = status_by_sig.get(child.signature(), {})
+                result = child_status.get('last-event', {}).get('result')
+                if result is None:
+                    not_run += 1
+                elif result == "PASSED":
+                    passed += 1
+                elif result == "FAILED":
+                    failed += 1
+                else:
+                    issue += 1
+            p.addEntry({
+                'id': tc['sha'][:tc_prefix],
+                'sha': tc['sha'],
+                'function': tc.function(),
+                'test': tc.test(),
+                'passed': Printer.green(str(passed)) if passed else "0",
+                'failed': Printer.red(str(failed)) if failed else "0",
+                'issue': Printer.yellow(str(issue)) if issue else "0",
+                'not_run': str(not_run),
+            })
+        p.print()
+
     def status(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
             description="Print scope status"
         )
+        parser.add_argument('--collapse', action='store_true')
         parser.add_argument('--long', action='store_true')
         parser.add_argument('--format', choices=['table', 'json'], default='table')
         args = parser.parse_args(argv)
+
+        if args.collapse:
+            return self.__status_collapsed(args)
 
         status = self.scope_handler.status()
 
