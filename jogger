@@ -6,7 +6,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-from common import JournalFile, StatusFile, TestCase, TestEvent, JournalParser
+from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser, \
+    min_sha_prefix_len
 
 from datetime import datetime
 from functools import reduce
@@ -284,6 +285,14 @@ class ScopeHandler:
 
         return results
 
+    def test_case_prefix_len(self):
+        tests = self.__get_tests(full=True, collapsed=True)
+        return min_sha_prefix_len([tc['sha'] for tc in tests])
+
+    def test_event_prefix_len(self):
+        queue = self.__get_queue()
+        return min_sha_prefix_len([te['sha'] for te in queue])
+
     def result_by_sha(self, req):
         results = self.results({})
         return next(
@@ -304,15 +313,17 @@ class ScopeHandler:
 
 
 class TestSelector:
-    def __init__(self, tests):
+    def __init__(self, tests, prefix_len):
         self.tests = tests
+        self.prefix_len = prefix_len
 
     def select(self):
         with NamedTemporaryFile(mode="r+") as tmpf:
+            prefix_len = self.prefix_len
             data = []
             for test_case in self.tests:
                 data.append([
-                    test_case['sha'][:16],
+                    test_case['sha'][:prefix_len],
                     test_case.function(),
                     test_case.get('last-event', {}).get('result', "")
                 ])
@@ -364,8 +375,10 @@ class SuperRunnerCli:
             'FAILED': Printer.red,
         }.get(string, Printer.yellow)(string)
 
-    @staticmethod
-    def __print_test_events(args, test_events):
+    def __print_test_events(self, args, test_events):
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        te_prefix = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -378,11 +391,11 @@ class SuperRunnerCli:
         for test_event in test_events:
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:tc_prefix],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
-                'event-id': test_event['sha'][:16],
+                'event-id': test_event['sha'][:te_prefix],
                 'event-sha': test_event['sha'],
             })
         p.print()
@@ -421,13 +434,15 @@ class SuperRunnerCli:
             'collapsed': args.collapse
         })
 
+        prefix_len = self.scope_handler.test_case_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
         p.setHeader([('Id', id_field), ('Test', test_field)])
         for test_case in tests:
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:prefix_len],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test()
@@ -478,7 +493,8 @@ class SuperRunnerCli:
         if args.missing:
             test_cases = [tc for tc in test_cases if not tc.get('queued-event')]
 
-        to_run = TestSelector(test_cases).select()
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        to_run = TestSelector(test_cases, tc_prefix).select()
 
         test_events = self.scope_handler.run(to_run)
         self.__print_test_events(args, test_events)
@@ -524,6 +540,8 @@ class SuperRunnerCli:
 
         queue = self.scope_handler.queue()
 
+        prefix_len = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -539,7 +557,7 @@ class SuperRunnerCli:
                 continue
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_event['sha'][:16],
+                'id': test_event['sha'][:prefix_len],
                 'sha': test_event['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
@@ -560,6 +578,9 @@ class SuperRunnerCli:
 
         status = self.scope_handler.status()
 
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        result_prefix = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         result_id_field = ('last-result-id', 'last-result-sha')[args.long]
@@ -577,14 +598,14 @@ class SuperRunnerCli:
             queued_event = test_case.get('queued-event', {})
             try:
                 last_event_result = self.__color_result(last_event['result'])
-                last_event_id = last_event['sha'][:16]
+                last_event_id = last_event['sha'][:result_prefix]
                 last_event_sha = last_event['sha']
                 last_event_date = (datetime.fromtimestamp(last_event['end-timestamp'])
                                    .strftime("%Y-%m-%d %H:%M:%S"))
             except (KeyError, TypeError):
                 last_event_result = last_event_id = last_event_sha = last_event_date = ""
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:tc_prefix],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
@@ -623,6 +644,8 @@ class SuperRunnerCli:
             }
         })
 
+        prefix_len = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -636,7 +659,7 @@ class SuperRunnerCli:
         for test_event in results:
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_event['sha'][:16],
+                'id': test_event['sha'][:prefix_len],
                 'sha': test_event['sha'],
                 'dut': test_event['host'],
                 'function': test_case.function(),

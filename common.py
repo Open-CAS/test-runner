@@ -124,6 +124,21 @@ class StatusFile:
                 json.dump(status, status_file)
 
 
+def min_sha_prefix_len(shas, minimum=4):
+    if len(shas) <= 1:
+        return minimum
+    shas = sorted(shas)
+    max_common = 0
+    for a, b in zip(shas, shas[1:]):
+        common = 0
+        for ca, cb in zip(a, b):
+            if ca != cb:
+                break
+            common += 1
+        max_common = max(max_common, common)
+    return max(max_common + 1, minimum)
+
+
 class TestCase(dict):
     def __init__(self, data):
         super().__init__(data)
