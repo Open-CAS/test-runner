@@ -9,7 +9,7 @@
 from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser, \
     min_sha_prefix_len
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import reduce
 from tabulate import tabulate
 from tempfile import NamedTemporaryFile
@@ -346,6 +346,7 @@ Supported commands:
   delete            Delete test event from the queue
   queue             Print test event queue
   status            Print scope status
+  summary           Print scope summary statistics
   results           Print list of test results
   show              Print details of test result
   log               Print console log for given test event
@@ -671,6 +672,101 @@ class SuperRunnerCli:
                 'last-result-date': last_event_date
             })
         p.print()
+
+    def summary(self, prog, argv):
+        parser = argparse.ArgumentParser(
+            prog=prog,
+            description="Print scope summary statistics"
+        )
+        parser.add_argument('--format', choices=['table', 'json'], default='table')
+        args = parser.parse_args(argv)
+
+        status = self.scope_handler.status()
+        total = len(status)
+
+        counts = {
+            'passed': 0,
+            'failed': 0,
+            'error': 0,
+            'exception': 0,
+            'blocked': 0,
+            'skipped': 0,
+            'warning': 0,
+            'not_run': 0,
+            'queued': 0,
+            'running': 0,
+        }
+
+        total_duration = timedelta(0)
+        dut_durations = {}
+        for tc in status:
+            queued = tc.get('queued-event', {})
+            last_event = tc.get('last-event', {})
+            result = last_event.get('result')
+
+            if queued.get('status') == 'started':
+                counts['running'] += 1
+            elif queued.get('status') == 'queued':
+                counts['queued'] += 1
+
+            if result is None:
+                counts['not_run'] += 1
+            else:
+                key = result.lower()
+                if key in counts:
+                    counts[key] += 1
+
+            if last_event.get('start-timestamp'):
+                event = TestEvent(last_event)
+                duration = event.duration()
+                total_duration += duration
+                host = last_event.get('host', 'unknown')
+                dut_durations[host] = dut_durations.get(host, timedelta(0)) + duration
+
+        if args.format == 'json':
+            print(json.dumps({**counts, 'total': total,
+                              'total_execution_time': str(total_duration),
+                              'execution_time_per_dut': {h: str(d) for h, d in
+                                                         dut_durations.items()}}, indent=2))
+            return
+
+        color = {
+            'passed': Printer.green,
+            'failed': Printer.red,
+            'error': Printer.red,
+            'exception': Printer.red,
+            'blocked': Printer.red,
+            'skipped': Printer.yellow,
+            'warning': Printer.yellow,
+            'not_run': lambda s: s,
+            'queued': lambda s: s,
+            'running': Printer.yellow,
+        }
+
+        label_width = max(len(k) for k in counts) + 1
+        count_width = len(str(total))
+        for key, count in counts.items():
+            label = key.upper().replace('_', ' ')
+            value = f"{count:>{count_width}}/{total}"
+            if count:
+                value = color[key](value)
+            print(f"  {label:<{label_width}}  {value}")
+        def fmt_duration(td):
+            total_seconds = int(td.total_seconds())
+            days, remainder = divmod(total_seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if days:
+                return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        dut_label_width = max((len(h) for h in dut_durations), default=0)
+        col = max(dut_label_width + 2, len('EXECUTION TIME'))
+        all_durations = list(dut_durations.values()) + [total_duration]
+        time_width = max(len(fmt_duration(d)) for d in all_durations)
+        print(f"\n  {'EXECUTION TIME':<{col}}  {fmt_duration(total_duration):>{time_width}}")
+        for host, duration in sorted(dut_durations.items()):
+            print(f"    {host:<{col - 2}}  {fmt_duration(duration):>{time_width}}")
 
     def results(self, prog, argv):
         parser = argparse.ArgumentParser(
