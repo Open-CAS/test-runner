@@ -685,6 +685,9 @@ class SuperRunnerCli:
 
         test_case = test_event['test-case']
 
+        te_prefix = self.scope_handler.test_event_prefix_len()
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+
         p = DataPrinter(args.format)
         p.setCaptions([
             ('Event SHA', 'event_sha'),
@@ -701,8 +704,8 @@ class SuperRunnerCli:
         completed = datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M:%S') if end_ts else ""
 
         p.setData({
-            'event_sha': test_event['sha'],
-            'test_sha': test_case['sha'],
+            'event_sha': test_event['sha'][:te_prefix],
+            'test_sha': test_case['sha'][:tc_prefix],
             'test': f"{test_case}",
             'dut': test_event['host'],
             'logs': test_event['logs'],
