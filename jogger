@@ -232,25 +232,23 @@ class ScopeHandler:
         return queue
 
     def status(self):
-        results = self.__get_results()
         tests = self.__get_tests(full=True)
         queue = self.queue()
 
-        results_dict = {}
-        for res in results:
-            results_dict[res['sha']] = res
+        # Group queue events by test-case SHA for O(1) lookup
+        events_by_tc = {}
+        for event in queue:
+            tc_sha = event['test-case']['sha']
+            events_by_tc.setdefault(tc_sha, []).append(event)
 
         for test_case in tests:
-            queued_events = filter(
-                lambda e: e['test-case'] == test_case,
-                reversed(queue)
-            )
-            last_event = next(queued_events, {})
+            tc_events = events_by_tc.get(test_case['sha'], [])
+            last_event = tc_events[-1] if tc_events else {}
             if last_event.get('status') in ['complete', 'error']:
                 completed_event = last_event
             else:
                 completed_event = {}
-                for test_event in queued_events:
+                for test_event in reversed(tc_events):
                     if test_event['status'] in ['complete', 'error']:
                         completed_event = test_event
                         break
@@ -261,14 +259,11 @@ class ScopeHandler:
         return tests
 
     def results(self, req):
-        def in_tests(result, tests):
-            return any([result['test-case'] == test_case for test_case in tests])
-
         results = [ev for ev in self.queue() if ev['status'] == "complete"]
         result_dict = {}
         for test_event in results:
             test_case = test_event['test-case']
-            result_dict[test_case] = test_event
+            result_dict[test_case['sha']] = test_event
 
         if req.get('filter', {}).get('last'):
             results = result_dict.values()
@@ -281,7 +276,8 @@ class ScopeHandler:
 
         if req.get('filter', {}).get('test-sha'):
             tests = self.__tests_by_sha(req['filter']['test-sha'])
-            results = [res for res in results if in_tests(res, tests)]
+            test_shas = {tc['sha'] for tc in tests}
+            results = [res for res in results if res['test-case']['sha'] in test_shas]
 
         return results
 
