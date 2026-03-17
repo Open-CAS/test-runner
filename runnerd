@@ -13,7 +13,7 @@ from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, Jou
 from pathlib import Path
 from queue import Queue, Empty
 from setproctitle import setproctitle
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, DEVNULL
 from tempfile import NamedTemporaryFile
 from threading import Thread, Lock, Event
 from watchdog.observers import Observer
@@ -72,7 +72,7 @@ class PytestRunner:
                 cmd += f"--{option}={value} "
         cmd += f"\"{test_case}\""
 
-        out = open(self.stdout_path, "w") if self.stdout_path else PIPE
+        out = open(self.stdout_path, "w") if self.stdout_path else DEVNULL
         with pid_lock:
             process = Popen(cmd, shell=True, stdout=out, stderr=out)
             child_pids.append(process.pid)
@@ -88,9 +88,8 @@ class PytestRunner:
             cmd += f"cd {self.test_dir}; "
         cmd += f"pytest --collect-only --random-seed={seed} -q \"{test_path}\""
         process = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
-        process.wait()
-        stdout = process.stdout.read().decode('ascii')
-        return stdout.splitlines()[:-2]
+        stdout, _ = process.communicate()
+        return stdout.decode('ascii').splitlines()[:-2]
 
 
 class Dut:
