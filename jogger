@@ -573,9 +573,9 @@ class SuperRunnerCli:
         for tc in collapsed:
             children_by_sha[tc['sha']] = tc.get('children', [tc])
 
-        status_by_sig = {}
+        status_by_sha = {}
         for tc in status:
-            status_by_sig[tc.signature()] = tc
+            status_by_sha[tc['sha']] = tc
 
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
@@ -592,7 +592,7 @@ class SuperRunnerCli:
             children = children_by_sha.get(tc['sha'], [tc])
             passed = failed = issue = not_run = 0
             for child in children:
-                child_status = status_by_sig.get(child.signature(), {})
+                child_status = status_by_sha.get(child['sha'], {})
                 result = child_status.get('last-event', {}).get('result')
                 if result is None:
                     not_run += 1

@@ -159,10 +159,10 @@ class TestCase(dict):
         return f"{self['path']}::{self.function()}"
 
     def __hash__(self):
-        return hash(self.signature())
+        return hash(self['sha'])
 
     def __eq__(self, other):
-        return self.signature() == other.signature()
+        return self['sha'] == other['sha']
 
     def __repr__(self):
         return self.test()
