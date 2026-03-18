@@ -332,6 +332,34 @@ class TestSelector:
             return [line.split()[0] for line in tmpf.readlines()]
 
 
+class QueueSelector:
+    def __init__(self, queue, prefix_len):
+        self.queue = queue
+        self.prefix_len = prefix_len
+
+    def select_removed(self):
+        with NamedTemporaryFile(mode="r+") as tmpf:
+            prefix_len = self.prefix_len
+            original_ids = set()
+            data = []
+            for test_event in self.queue:
+                sha_prefix = test_event['sha'][:prefix_len]
+                original_ids.add(sha_prefix)
+                test_case = test_event['test-case']
+                data.append([
+                    sha_prefix,
+                    test_case.function(),
+                    test_event['status']
+                ])
+            tmpf.write(tabulate(data, tablefmt="plain"))
+            tmpf.flush()
+
+            os.system(f"vim {tmpf.name}")
+
+            tmpf.seek(0)
+            remaining_ids = set(line.split()[0] for line in tmpf.readlines() if line.strip())
+            return list(original_ids - remaining_ids)
+
 usage = """%(prog)s command [args]
 
 Supported commands:
@@ -339,7 +367,7 @@ Supported commands:
   tests             Print list of test cases
   run               Run specified tests or select them interactively
   rerun             Re-queue a test case from given event
-  delete            Delete test event from the queue
+  delete            Delete test events from the queue
   queue             Print test event queue
   status            Print scope status
   summary           Print scope summary statistics
@@ -517,13 +545,31 @@ class SuperRunnerCli:
     def delete(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
-            description="Delete test event from the queue"
+            description="Delete test events from the queue"
         )
-        parser.add_argument('id')
+        parser.add_argument('ids', nargs='*')
         args = parser.parse_args(argv)
 
-        test_event = self.scope_handler.test_event_by_sha({'sha': args.id})
-        self.scope_handler.delete({'test-event': test_event})
+        if args.ids:
+            for sha in args.ids:
+                test_event = self.scope_handler.test_event_by_sha({'sha': sha})
+                if test_event:
+                    self.scope_handler.delete({'test-event': test_event})
+            return
+
+        queue = self.scope_handler.queue()
+        queue = [te for te in queue if te['status'] not in ["complete", "error"]]
+
+        if not queue:
+            return
+
+        prefix_len = self.scope_handler.test_event_prefix_len()
+        to_delete = QueueSelector(queue, prefix_len).select_removed()
+
+        for sha in to_delete:
+            test_event = self.scope_handler.test_event_by_sha({'sha': sha})
+            if test_event:
+                self.scope_handler.delete({'test-event': test_event})
 
     def queue(self, prog, argv):
         parser = argparse.ArgumentParser(
