@@ -213,6 +213,19 @@ class ScopeHandler:
             })
         return test_event
 
+    def delete_many(self, test_events):
+        deleted = []
+        with self.journal_file.record() as journal:
+            for test_event in test_events:
+                if test_event['status'] == "complete":
+                    continue
+                journal.append({
+                    'type': "delete",
+                    'test-event': test_event
+                })
+                deleted.append(test_event)
+        return deleted
+
     def queue(self):
         results = self.__get_results()
         queue = self.__get_queue()
@@ -551,10 +564,9 @@ class SuperRunnerCli:
         args = parser.parse_args(argv)
 
         if args.ids:
-            for sha in args.ids:
-                test_event = self.scope_handler.test_event_by_sha({'sha': sha})
-                if test_event:
-                    self.scope_handler.delete({'test-event': test_event})
+            test_events = [self.scope_handler.test_event_by_sha({'sha': sha})
+                           for sha in args.ids]
+            self.scope_handler.delete_many([te for te in test_events if te])
             return
 
         queue = self.scope_handler.queue()
@@ -566,10 +578,9 @@ class SuperRunnerCli:
         prefix_len = self.scope_handler.test_event_prefix_len()
         to_delete = QueueSelector(queue, prefix_len).select_removed()
 
-        for sha in to_delete:
-            test_event = self.scope_handler.test_event_by_sha({'sha': sha})
-            if test_event:
-                self.scope_handler.delete({'test-event': test_event})
+        test_events = [self.scope_handler.test_event_by_sha({'sha': sha})
+                       for sha in to_delete]
+        self.scope_handler.delete_many([te for te in test_events if te])
 
     def queue(self, prog, argv):
         parser = argparse.ArgumentParser(
