@@ -5,6 +5,7 @@ requirements.txt` and set following environment variables in `~/.bashrc`:
 ```
 export RUNNER_PATH=<path to superrunner directory>
 export PATH="$PATH:$RUNNER_PATH/bin/"
+source $RUNNER_PATH/completions/jogger.bash
 ```
 
 ## Setup

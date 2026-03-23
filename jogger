@@ -6,9 +6,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 
-from common import JournalFile, StatusFile, TestCase, TestEvent, JournalParser
+from common import ConfigFile, JournalFile, StatusFile, TestCase, TestEvent, JournalParser, \
+    min_sha_prefix_len
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import reduce
 from tabulate import tabulate
 from tempfile import NamedTemporaryFile
@@ -212,6 +213,19 @@ class ScopeHandler:
             })
         return test_event
 
+    def delete_many(self, test_events):
+        deleted = []
+        with self.journal_file.record() as journal:
+            for test_event in test_events:
+                if test_event['status'] == "complete":
+                    continue
+                journal.append({
+                    'type': "delete",
+                    'test-event': test_event
+                })
+                deleted.append(test_event)
+        return deleted
+
     def queue(self):
         results = self.__get_results()
         queue = self.__get_queue()
@@ -231,25 +245,23 @@ class ScopeHandler:
         return queue
 
     def status(self):
-        results = self.__get_results()
         tests = self.__get_tests(full=True)
         queue = self.queue()
 
-        results_dict = {}
-        for res in results:
-            results_dict[res['sha']] = res
+        # Group queue events by test-case SHA for O(1) lookup
+        events_by_tc = {}
+        for event in queue:
+            tc_sha = event['test-case']['sha']
+            events_by_tc.setdefault(tc_sha, []).append(event)
 
         for test_case in tests:
-            queued_events = filter(
-                lambda e: e['test-case'] == test_case,
-                reversed(queue)
-            )
-            last_event = next(queued_events, {})
+            tc_events = events_by_tc.get(test_case['sha'], [])
+            last_event = tc_events[-1] if tc_events else {}
             if last_event.get('status') in ['complete', 'error']:
                 completed_event = last_event
             else:
                 completed_event = {}
-                for test_event in queued_events:
+                for test_event in reversed(tc_events):
                     if test_event['status'] in ['complete', 'error']:
                         completed_event = test_event
                         break
@@ -260,14 +272,11 @@ class ScopeHandler:
         return tests
 
     def results(self, req):
-        def in_tests(result, tests):
-            return any([result['test-case'] == test_case for test_case in tests])
-
         results = [ev for ev in self.queue() if ev['status'] == "complete"]
         result_dict = {}
         for test_event in results:
             test_case = test_event['test-case']
-            result_dict[test_case] = test_event
+            result_dict[test_case['sha']] = test_event
 
         if req.get('filter', {}).get('last'):
             results = result_dict.values()
@@ -280,9 +289,18 @@ class ScopeHandler:
 
         if req.get('filter', {}).get('test-sha'):
             tests = self.__tests_by_sha(req['filter']['test-sha'])
-            results = [res for res in results if in_tests(res, tests)]
+            test_shas = {tc['sha'] for tc in tests}
+            results = [res for res in results if res['test-case']['sha'] in test_shas]
 
         return results
+
+    def test_case_prefix_len(self):
+        tests = self.__get_tests(full=True, collapsed=True)
+        return min_sha_prefix_len([tc['sha'] for tc in tests])
+
+    def test_event_prefix_len(self):
+        queue = self.__get_queue()
+        return min_sha_prefix_len([te['sha'] for te in queue])
 
     def result_by_sha(self, req):
         results = self.results({})
@@ -304,15 +322,17 @@ class ScopeHandler:
 
 
 class TestSelector:
-    def __init__(self, tests):
+    def __init__(self, tests, prefix_len):
         self.tests = tests
+        self.prefix_len = prefix_len
 
     def select(self):
         with NamedTemporaryFile(mode="r+") as tmpf:
+            prefix_len = self.prefix_len
             data = []
             for test_case in self.tests:
                 data.append([
-                    test_case['sha'][:16],
+                    test_case['sha'][:prefix_len],
                     test_case.function(),
                     test_case.get('last-event', {}).get('result', "")
                 ])
@@ -325,15 +345,45 @@ class TestSelector:
             return [line.split()[0] for line in tmpf.readlines()]
 
 
+class QueueSelector:
+    def __init__(self, queue, prefix_len):
+        self.queue = queue
+        self.prefix_len = prefix_len
+
+    def select_removed(self):
+        with NamedTemporaryFile(mode="r+") as tmpf:
+            prefix_len = self.prefix_len
+            original_ids = set()
+            data = []
+            for test_event in self.queue:
+                sha_prefix = test_event['sha'][:prefix_len]
+                original_ids.add(sha_prefix)
+                test_case = test_event['test-case']
+                data.append([
+                    sha_prefix,
+                    test_case.function(),
+                    test_event['status']
+                ])
+            tmpf.write(tabulate(data, tablefmt="plain"))
+            tmpf.flush()
+
+            os.system(f"vim {tmpf.name}")
+
+            tmpf.seek(0)
+            remaining_ids = set(line.split()[0] for line in tmpf.readlines() if line.strip())
+            return list(original_ids - remaining_ids)
+
 usage = """%(prog)s command [args]
 
 Supported commands:
   init              Initialize new test scope
   tests             Print list of test cases
   run               Run specified tests or select them interactively
-  delete            Delete test event from the queue
+  rerun             Re-queue a test case from given event
+  delete            Delete test events from the queue
   queue             Print test event queue
   status            Print scope status
+  summary           Print scope summary statistics
   results           Print list of test results
   show              Print details of test result
   log               Print console log for given test event
@@ -363,8 +413,10 @@ class SuperRunnerCli:
             'FAILED': Printer.red,
         }.get(string, Printer.yellow)(string)
 
-    @staticmethod
-    def __print_test_events(args, test_events):
+    def __print_test_events(self, args, test_events):
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        te_prefix = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -377,11 +429,11 @@ class SuperRunnerCli:
         for test_event in test_events:
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:tc_prefix],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
-                'event-id': test_event['sha'][:16],
+                'event-id': test_event['sha'][:te_prefix],
                 'event-sha': test_event['sha'],
             })
         p.print()
@@ -420,13 +472,15 @@ class SuperRunnerCli:
             'collapsed': args.collapse
         })
 
+        prefix_len = self.scope_handler.test_case_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
         p.setHeader([('Id', id_field), ('Test', test_field)])
         for test_case in tests:
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:prefix_len],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test()
@@ -470,28 +524,63 @@ class SuperRunnerCli:
 
         if args.not_passed:
             test_cases = list(filter(
-                lambda tc: tc.get('last-event', {}).get('result') not in [None, "PASSED"],
+                lambda tc: tc.get('last-event', {}).get('result') not in ["PASSED"],
                 test_cases
             ))
 
         if args.missing:
             test_cases = [tc for tc in test_cases if not tc.get('queued-event')]
 
-        to_run = TestSelector(test_cases).select()
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        to_run = TestSelector(test_cases, tc_prefix).select()
 
         test_events = self.scope_handler.run(to_run)
+        self.__print_test_events(args, test_events)
+
+    def rerun(self, prog, argv):
+        parser = argparse.ArgumentParser(
+            prog=prog,
+            description="Re-queue a test case from given event"
+        )
+        parser.add_argument('sha')
+        parser.add_argument('--long', action='store_true')
+        parser.add_argument('--format', choices=['table', 'json'], default='table')
+        args = parser.parse_args(argv)
+
+        res = self.scope_handler.result_by_sha({'sha': args.sha})
+        if not res:
+            error(f"Result with id '{args.sha}' not found")
+            exit(1)
+
+        test_events = self.scope_handler.run([res['test-case']['sha']])
         self.__print_test_events(args, test_events)
 
     def delete(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
-            description="Delete test event from the queue"
+            description="Delete test events from the queue"
         )
-        parser.add_argument('id')
+        parser.add_argument('ids', nargs='*')
         args = parser.parse_args(argv)
 
-        test_event = self.scope_handler.test_event_by_sha({'sha': args.id})
-        self.scope_handler.delete({'test-event': test_event})
+        if args.ids:
+            test_events = [self.scope_handler.test_event_by_sha({'sha': sha})
+                           for sha in args.ids]
+            self.scope_handler.delete_many([te for te in test_events if te])
+            return
+
+        queue = self.scope_handler.queue()
+        queue = [te for te in queue if te['status'] not in ["complete", "error"]]
+
+        if not queue:
+            return
+
+        prefix_len = self.scope_handler.test_event_prefix_len()
+        to_delete = QueueSelector(queue, prefix_len).select_removed()
+
+        test_events = [self.scope_handler.test_event_by_sha({'sha': sha})
+                       for sha in to_delete]
+        self.scope_handler.delete_many([te for te in test_events if te])
 
     def queue(self, prog, argv):
         parser = argparse.ArgumentParser(
@@ -504,6 +593,8 @@ class SuperRunnerCli:
         args = parser.parse_args(argv)
 
         queue = self.scope_handler.queue()
+
+        prefix_len = self.scope_handler.test_event_prefix_len()
 
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
@@ -520,7 +611,7 @@ class SuperRunnerCli:
                 continue
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_event['sha'][:16],
+                'id': test_event['sha'][:prefix_len],
                 'sha': test_event['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
@@ -530,16 +621,73 @@ class SuperRunnerCli:
             })
         p.print()
 
+    def __status_collapsed(self, args):
+        status = self.scope_handler.status()
+        collapsed = self.scope_handler.tests({'collapsed': True})
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+
+        children_by_sha = {}
+        for tc in collapsed:
+            children_by_sha[tc['sha']] = tc.get('children', [tc])
+
+        status_by_sha = {}
+        for tc in status:
+            status_by_sha[tc['sha']] = tc
+
+        p = ListPrinter(args.format)
+        id_field = ('id', 'sha')[args.long]
+        test_field = ('function', 'test')[args.long]
+        p.setHeader([
+            ('Id', id_field),
+            ('Test', test_field),
+            ('Passed', 'passed'),
+            ('Failed', 'failed'),
+            ('Issue', 'issue'),
+            ('Not run', 'not_run'),
+        ])
+        for tc in collapsed:
+            children = children_by_sha.get(tc['sha'], [tc])
+            passed = failed = issue = not_run = 0
+            for child in children:
+                child_status = status_by_sha.get(child['sha'], {})
+                result = child_status.get('last-event', {}).get('result')
+                if result is None:
+                    not_run += 1
+                elif result == "PASSED":
+                    passed += 1
+                elif result == "FAILED":
+                    failed += 1
+                else:
+                    issue += 1
+            p.addEntry({
+                'id': tc['sha'][:tc_prefix],
+                'sha': tc['sha'],
+                'function': tc.function(),
+                'test': tc.test(),
+                'passed': Printer.green(str(passed)) if passed else "0",
+                'failed': Printer.red(str(failed)) if failed else "0",
+                'issue': Printer.yellow(str(issue)) if issue else "0",
+                'not_run': str(not_run),
+            })
+        p.print()
+
     def status(self, prog, argv):
         parser = argparse.ArgumentParser(
             prog=prog,
             description="Print scope status"
         )
+        parser.add_argument('--collapse', action='store_true')
         parser.add_argument('--long', action='store_true')
         parser.add_argument('--format', choices=['table', 'json'], default='table')
         args = parser.parse_args(argv)
 
+        if args.collapse:
+            return self.__status_collapsed(args)
+
         status = self.scope_handler.status()
+
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+        result_prefix = self.scope_handler.test_event_prefix_len()
 
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
@@ -558,14 +706,14 @@ class SuperRunnerCli:
             queued_event = test_case.get('queued-event', {})
             try:
                 last_event_result = self.__color_result(last_event['result'])
-                last_event_id = last_event['sha'][:16]
+                last_event_id = last_event['sha'][:result_prefix]
                 last_event_sha = last_event['sha']
                 last_event_date = (datetime.fromtimestamp(last_event['end-timestamp'])
                                    .strftime("%Y-%m-%d %H:%M:%S"))
             except (KeyError, TypeError):
                 last_event_result = last_event_id = last_event_sha = last_event_date = ""
             p.addEntry({
-                'id': test_case['sha'][:16],
+                'id': test_case['sha'][:tc_prefix],
                 'sha': test_case['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
@@ -577,6 +725,101 @@ class SuperRunnerCli:
                 'last-result-date': last_event_date
             })
         p.print()
+
+    def summary(self, prog, argv):
+        parser = argparse.ArgumentParser(
+            prog=prog,
+            description="Print scope summary statistics"
+        )
+        parser.add_argument('--format', choices=['table', 'json'], default='table')
+        args = parser.parse_args(argv)
+
+        status = self.scope_handler.status()
+        total = len(status)
+
+        counts = {
+            'passed': 0,
+            'failed': 0,
+            'error': 0,
+            'exception': 0,
+            'blocked': 0,
+            'skipped': 0,
+            'warning': 0,
+            'not_run': 0,
+            'queued': 0,
+            'running': 0,
+        }
+
+        total_duration = timedelta(0)
+        dut_durations = {}
+        for tc in status:
+            queued = tc.get('queued-event', {})
+            last_event = tc.get('last-event', {})
+            result = last_event.get('result')
+
+            if queued.get('status') == 'started':
+                counts['running'] += 1
+            elif queued.get('status') == 'queued':
+                counts['queued'] += 1
+
+            if result is None:
+                counts['not_run'] += 1
+            else:
+                key = result.lower()
+                if key in counts:
+                    counts[key] += 1
+
+            if last_event.get('start-timestamp'):
+                event = TestEvent(last_event)
+                duration = event.duration()
+                total_duration += duration
+                host = last_event.get('host', 'unknown')
+                dut_durations[host] = dut_durations.get(host, timedelta(0)) + duration
+
+        if args.format == 'json':
+            print(json.dumps({**counts, 'total': total,
+                              'total_execution_time': str(total_duration),
+                              'execution_time_per_dut': {h: str(d) for h, d in
+                                                         dut_durations.items()}}, indent=2))
+            return
+
+        color = {
+            'passed': Printer.green,
+            'failed': Printer.red,
+            'error': Printer.red,
+            'exception': Printer.red,
+            'blocked': Printer.red,
+            'skipped': Printer.yellow,
+            'warning': Printer.yellow,
+            'not_run': lambda s: s,
+            'queued': lambda s: s,
+            'running': Printer.yellow,
+        }
+
+        label_width = max(len(k) for k in counts) + 1
+        count_width = len(str(total))
+        for key, count in counts.items():
+            label = key.upper().replace('_', ' ')
+            value = f"{count:>{count_width}}/{total}"
+            if count:
+                value = color[key](value)
+            print(f"  {label:<{label_width}}  {value}")
+        def fmt_duration(td):
+            total_seconds = int(td.total_seconds())
+            days, remainder = divmod(total_seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if days:
+                return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        dut_label_width = max((len(h) for h in dut_durations), default=0)
+        col = max(dut_label_width + 2, len('EXECUTION TIME'))
+        all_durations = list(dut_durations.values()) + [total_duration]
+        time_width = max(len(fmt_duration(d)) for d in all_durations)
+        print(f"\n  {'EXECUTION TIME':<{col}}  {fmt_duration(total_duration):>{time_width}}")
+        for host, duration in sorted(dut_durations.items()):
+            print(f"    {host:<{col - 2}}  {fmt_duration(duration):>{time_width}}")
 
     def results(self, prog, argv):
         parser = argparse.ArgumentParser(
@@ -604,6 +847,8 @@ class SuperRunnerCli:
             }
         })
 
+        prefix_len = self.scope_handler.test_event_prefix_len()
+
         p = ListPrinter(args.format)
         id_field = ('id', 'sha')[args.long]
         test_field = ('function', 'test')[args.long]
@@ -617,7 +862,7 @@ class SuperRunnerCli:
         for test_event in results:
             test_case = test_event['test-case']
             p.addEntry({
-                'id': test_event['sha'][:16],
+                'id': test_event['sha'][:prefix_len],
                 'sha': test_event['sha'],
                 'dut': test_event['host'],
                 'function': test_case.function(),
@@ -643,22 +888,33 @@ class SuperRunnerCli:
 
         test_case = test_event['test-case']
 
+        te_prefix = self.scope_handler.test_event_prefix_len()
+        tc_prefix = self.scope_handler.test_case_prefix_len()
+
         p = DataPrinter(args.format)
         p.setCaptions([
-            ('SHA', 'sha'),
+            ('Event SHA', 'event_sha'),
+            ('Test SHA', 'test_sha'),
             ('Test', 'test'),
             ('DUT', 'dut'),
             ('Logs', 'logs'),
             ('Result', 'result'),
-            ('Duration', 'duration')
+            ('Duration', 'duration'),
+            ('Completed', 'completed')
         ])
+
+        end_ts = test_event.get('end-timestamp')
+        completed = datetime.fromtimestamp(end_ts).strftime('%Y-%m-%d %H:%M:%S') if end_ts else ""
+
         p.setData({
-            'sha': test_event['sha'],
+            'event_sha': test_event['sha'][:te_prefix],
+            'test_sha': test_case['sha'][:tc_prefix],
             'test': f"{test_case}",
             'dut': test_event['host'],
             'logs': test_event['logs'],
             'result': self.__color_result(test_event['result']),
-            'duration': test_event.duration()
+            'duration': test_event.duration(),
+            'completed': completed
         })
         p.print()
 
