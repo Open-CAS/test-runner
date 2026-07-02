@@ -603,19 +603,20 @@ class SuperRunnerCli:
             ('Id', id_field),
             ('Test', test_field),
             ('Status', 'status'),
+            ('Result', 'result'),
             ('DUT', 'dut'),
             ('Duration', 'duration')
         ])
         for test_event in queue:
-            if not args.all and test_event['status'] in ["complete", "error"]:
-                continue
             test_case = test_event['test-case']
+            result = test_event.get('result')
             p.addEntry({
                 'id': test_event['sha'][:prefix_len],
                 'sha': test_event['sha'],
                 'function': test_case.function(),
                 'test': test_case.test(),
                 'status': test_event['status'],
+                'result': self.__color_result(result) if result else "",
                 'dut': test_event.get('host', ""),
                 'duration': test_event.duration()
             })
