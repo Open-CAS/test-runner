@@ -587,12 +587,40 @@ class SuperRunnerCli:
             prog=prog,
             description="Print test event queue"
         )
-        parser.add_argument('--all', action='store_true')
+        mode = parser.add_mutually_exclusive_group()
+        mode.add_argument('--all', action='store_true')
+        mode.add_argument('--window', type=int, nargs='?', const=20, default=None,
+                          metavar='N',
+                          help="Show a window of N events (default 20), split "
+                               "evenly between the most recent completed and "
+                               "the next running/queued events")
         parser.add_argument('--long', action='store_true')
         parser.add_argument('--format', choices=['table', 'json'], default='table')
         args = parser.parse_args(argv)
 
         queue = self.scope_handler.queue()
+
+        completed_statuses = ["complete", "error"]
+        if args.window is not None:
+            if args.window < 0:
+                parser.error("--window N must not be negative")
+            completed = [te for te in queue
+                         if te['status'] in completed_statuses]
+            pending = [te for te in queue
+                       if te['status'] not in completed_statuses]
+            completed_take = min(len(completed), args.window // 2)
+            pending_take = min(len(pending), args.window - args.window // 2)
+            # If one half is short, fill the remaining slots from the other.
+            slack = args.window - completed_take - pending_take
+            extra_completed = min(len(completed) - completed_take, slack)
+            completed_take += extra_completed
+            slack -= extra_completed
+            pending_take += min(len(pending) - pending_take, slack)
+            queue = (completed[-completed_take:] if completed_take else []) \
+                + pending[:pending_take]
+        elif not args.all:
+            queue = [te for te in queue
+                     if te['status'] not in completed_statuses]
 
         prefix_len = self.scope_handler.test_event_prefix_len()
 
