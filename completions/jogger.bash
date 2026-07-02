@@ -56,7 +56,7 @@ _jogger() {
             COMPREPLY=($(compgen -W "--all --window --long --format" -- "$cur"))
             ;;
         status)
-            COMPREPLY=($(compgen -W "--collapse --long --format" -- "$cur"))
+            COMPREPLY=($(compgen -W "--collapse --not-passed --long --format" -- "$cur"))
             ;;
         summary)
             COMPREPLY=($(compgen -W "--format" -- "$cur"))
